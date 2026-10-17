@@ -107,9 +107,12 @@ User question:
     try:
         response = client.models.generate_content(
             model="gemini-3.8-flash",
-            contents=prompt
+            contents=prompt,
+            config=types.GenerateContentConfig(
+        max_output_tokens=150,
+        temperature=0.3
         )
-
+        )
         reply = response.text
 
         if not reply or not reply.strip():
