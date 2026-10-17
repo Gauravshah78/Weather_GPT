@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const API_URL = "https://weather-gpt-4.onrender.com";
 
 const weatherTypes = {
   0: "Clear Sky",
@@ -32,14 +32,9 @@ function getWeatherIcon(code) {
   if ([1, 2].includes(code)) return "🌤️";
   if (code === 3) return "☁️";
   if ([45, 48].includes(code)) return "🌫️";
-
-  if ([51, 53, 55, 61, 63, 65, 80, 81, 82].includes(code)) {
-    return "🌧️";
-  }
-
+  if ([51, 53, 55, 61, 63, 65, 80, 81, 82].includes(code)) return "🌧️";
   if ([71, 73, 75].includes(code)) return "❄️";
   if ([95, 96, 99].includes(code)) return "⛈️";
-
   return "🌦️";
 }
 
@@ -57,9 +52,11 @@ function App() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceError, setVoiceError] = useState("");
 
-
   async function fetchWeather(cityName) {
-    if (!cityName.trim()) {
+    const trimmedCity = cityName.trim();
+
+
+    if (!trimmedCity) {
       setError("Please enter a city name.");
       return;
     }
@@ -69,320 +66,311 @@ function App() {
 
     try {
       const response = await fetch(
-        `${API_URL}/api/weather?city=${encodeURIComponent(cityName.trim())}`
+        `${API_URL}/api/weather?city=${encodeURIComponent(trimmedCity)}`
       );
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || data.status === "error") {
         throw new Error(
-          errorData.detail || `Weather request failed (${response.status})`
+          data.detail || data.message || "Unable to fetch weather."
         );
       }
 
-      const data = await response.json();
+      if (!data.city || !data.daily || data.temperature === undefined) {
+        throw new Error("The weather API returned incomplete data.");
+      }
 
-      console.log("Weather data:", data);
+      setWeather({
+        current: {
+          temperature_2m: data.temperature,
+          apparent_temperature: data.feels_like,
+          relative_humidity_2m: data.humidity,
+          wind_speed_10m: Number((data.wind_speed * 3.6).toFixed(1)),
+          weather_code: data.daily.weather_code?.[0] ?? 0,
+          is_day: data.icon?.endsWith("d") ? 1 : 0,
+          precipitation: 0,
+          time: new Date().toISOString(),
+        },
+        daily: {
+          time: data.daily.time ?? [],
+          weather_code: data.daily.weather_code ?? [],
+          temperature_2m_max: data.daily.temperature_2m_max ?? [],
+          temperature_2m_min: data.daily.temperature_2m_min ?? [],
+          precipitation_probability_max:
+            data.daily.precipitation_probability_max ?? [],
+        },
+        place: {
+          name: data.city,
+          country: data.country,
+        },
+      });
 
-      // Keep your existing code here that updates the weather state.
-    } catch (error) {
-      console.error("Weather fetch error:", error);
-      // Keep your existing error-state handling here.
+      setCity(data.city);
+      setSearch("");
+      setUpdatedAt(
+        new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      );
+    } catch (err) {
+      console.error("Weather fetch error:", err);
+      setError(err.message || "Unable to fetch weather.");
+    } finally {
+      setLoading(false);
     }
 
 
-
-    setWeather({
-      current: {
-        temperature_2m: data.temperature,
-        apparent_temperature: data.feels_like,
-        relative_humidity_2m: data.humidity,
-        wind_speed_10m: data.wind_speed * 3.6,
-        weather_code: data.daily.weather_code[0],
-        is_day: data.icon?.endsWith("d") ? 1 : 0,
-        precipitation: 0,
-        time: new Date().toISOString()
-      },
-      daily: {
-        time: data.daily.time,
-        weather_code: data.daily.weather_code,
-        temperature_2m_max: data.daily.temperature_2m_max,
-        temperature_2m_min: data.daily.temperature_2m_min,
-        precipitation_probability_max:
-          data.daily.precipitation_probability_max
-      },
-      place: {
-        name: data.city,
-        country: data.country
-      }
-    });
-
-    setCity(data.city);
-    setSearch("");
-
-    setUpdatedAt(
-      new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit"
-      })
-    );
-  } catch (err) {
-    setError(err.message || "Unable to fetch weather.");
-  } finally {
-    setLoading(false);
   }
-}
+
+  useEffect(() => {
+    fetchWeather("Dehradun");
 
 
+    return () => {
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
 
-useEffect(() => {
-  fetchWeather("Dehradun");
 
-  return () => {
+  }, []);
+
+  function handleSearch(event) {
+    event.preventDefault();
+    fetchWeather(search);
+  }
+
+  function startVoiceInput() {
+    setVoiceError("");
+
+
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setVoiceError(
+        "Voice recognition is not supported in this browser. Please use Google Chrome."
+      );
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-IN";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onstart = () => setIsListening(true);
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript.trim();
+
+      if (transcript) {
+        setChatInput(transcript);
+        sendChatMessage(null, transcript);
+      }
+    };
+
+    recognition.onerror = (event) => {
+      setVoiceError(
+        event.error === "not-allowed"
+          ? "Microphone permission denied. Please allow microphone access."
+          : `Voice error: ${event.error}`
+      );
+    };
+
+    recognition.onend = () => setIsListening(false);
+
+    try {
+      recognition.start();
+    } catch {
+      setIsListening(false);
+      setVoiceError("Microphone could not start. Please try again.");
+    }
+
+
+  }
+
+  function stopSpeaking() {
     if ("speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
-  };
-}, []);
 
-function handleSearch(event) {
-  event.preventDefault();
-  fetchWeather(search);
-}
 
-function startVoiceInput() {
-  setVoiceError("");
+    setIsSpeaking(false);
 
-  const SpeechRecognition =
-    window.SpeechRecognition || window.webkitSpeechRecognition;
 
-  if (!SpeechRecognition) {
-    setVoiceError(
-      "Voice recognition is not supported in this browser. Please use Google Chrome."
-    );
-    return;
   }
 
-  const recognition = new SpeechRecognition();
-  recognition.lang = "en-IN";
-  recognition.continuous = false;
-  recognition.interimResults = false;
-
-  recognition.onstart = () => {
-    setIsListening(true);
-  };
-
-  recognition.onresult = (event) => {
-    const transcript = event.results[0][0].transcript.trim();
-
-    if (transcript) {
-      setChatInput(transcript);
-      sendChatMessage(null, transcript);
+  function speakReply(text) {
+    if (!("speechSynthesis" in window)) {
+      setVoiceError("Voice playback is not supported in this browser.");
+      return;
     }
-  };
 
-  recognition.onerror = (event) => {
-    setVoiceError(
-      event.error === "not-allowed"
-        ? "Microphone permission denied. Please allow microphone access."
-        : `Voice error: ${event.error}`
-    );
-  };
 
-  recognition.onend = () => {
-    setIsListening(false);
-  };
-
-  try {
-    recognition.start();
-  } catch {
-    setIsListening(false);
-    setVoiceError("Microphone could not start. Please try again.");
-  }
-}
-
-function stopSpeaking() {
-  if ("speechSynthesis" in window) {
     window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-IN";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+
+    window.speechSynthesis.speak(utterance);
+
+
   }
-  setIsSpeaking(false);
-}
 
-function speakReply(text) {
-  if (!("speechSynthesis" in window)) {
-    setVoiceError("Voice playback is not supported in this browser.");
-    return;
-  }
+  async function sendChatMessage(event, overrideMessage = "") {
+    event?.preventDefault();
 
-  window.speechSynthesis.cancel();
 
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = "en-IN";
-  utterance.rate = 1;
-  utterance.pitch = 1;
-  utterance.onstart = () => setIsSpeaking(true);
-  utterance.onend = () => setIsSpeaking(false);
-  utterance.onerror = () => setIsSpeaking(false);
+    const message = (overrideMessage || chatInput).trim();
 
-  window.speechSynthesis.speak(utterance);
-}
+    if (!message || chatLoading) return;
 
-async function sendChatMessage(event, overrideMessage = "") {
-  event?.preventDefault();
+    setChatMessages((previous) => [
+      ...previous,
+      { role: "user", text: message },
+    ]);
 
-  const message = (overrideMessage || chatInput).trim();
+    setChatInput("");
+    setChatLoading(true);
+    setVoiceError("");
 
-  if (!message || chatLoading) return;
+    try {
+      const response = await fetch(`${API_URL}/api/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message,
+          weather: weather
+            ? {
+              city: weather.place?.name,
+              temperature: weather.current?.temperature_2m,
+              feels_like: weather.current?.apparent_temperature,
+              humidity: weather.current?.relative_humidity_2m,
+              wind_speed: weather.current?.wind_speed_10m,
+              condition:
+                weatherTypes[weather.current?.weather_code] || "Unknown",
+              forecast: weather.daily
+                ? weather.daily.time.slice(0, 3).map((date, index) => ({
+                  date,
+                  max_temperature:
+                    weather.daily.temperature_2m_max[index],
+                  min_temperature:
+                    weather.daily.temperature_2m_min[index],
+                  rain_probability:
+                    weather.daily.precipitation_probability_max[index] ??
+                    null,
+                }))
+                : [],
+            }
+            : null,
+        }),
+      });
 
-  setChatMessages((previous) => [
-    ...previous,
-    { role: "user", text: message },
-  ]);
+      const data = await response.json().catch(() => ({}));
 
-  setChatInput("");
-  setChatLoading(true);
+      if (!response.ok) {
+        throw new Error(
+          data.detail || data.message || "Unable to get an AI response."
+        );
+      }
 
-  try {
-    const response = await fetch("http://127.0.0.1:8000/api/chat", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        message,
-        weather: weather
-          ? {
-            city: weather.place?.name,
-            temperature: weather.current?.temperature_2m,
-            feels_like: weather.current?.apparent_temperature,
-            humidity: weather.current?.relative_humidity_2m,
-            wind_speed: weather.current?.wind_speed_10m,
-            condition:
-              weatherTypes[weather.current?.weather_code] ||
-              "Unknown",
-            forecast: weather.daily
-              ? weather.daily.time.slice(0, 3).map((date, index) => ({
-                date,
-                max_temperature:
-                  weather.daily.temperature_2m_max[index],
-                min_temperature:
-                  weather.daily.temperature_2m_min[index],
-                rain_probability:
-                  weather.daily.precipitation_probability_max?.[
-                  index
-                  ] ?? null,
-              }))
-              : [],
-          }
-          : null,
-      }),
-    });
+      if (!data.reply) {
+        throw new Error("The AI service returned an empty response.");
+      }
 
-    const data = await response.json();
+      setChatMessages((previous) => [
+        ...previous,
+        { role: "assistant", text: data.reply },
+      ]);
 
-    if (!response.ok) {
-      throw new Error(
-        data.detail || "Unable to get a response from WeatherGPT."
-      );
+      speakReply(data.reply);
+    } catch (err) {
+      setChatMessages((previous) => [
+        ...previous,
+        {
+          role: "assistant",
+          text: `Sorry, ${err.message}. Please try again.`,
+        },
+      ]);
+    } finally {
+      setChatLoading(false);
     }
 
-    setChatMessages((previous) => [
-      ...previous,
-      {
-        role: "assistant",
-        text: data.reply,
-      },
-    ]);
-    speakReply(data.reply);
-  } catch (error) {
-    setChatMessages((previous) => [
-      ...previous,
-      {
-        role: "assistant",
-        text: `Sorry, ${error.message}. Please check that the backend is running.`,
-      },
-    ]);
-  } finally {
-    setChatLoading(false);
+
   }
-}
-const current = weather?.current;
-const daily = weather?.daily;
-const place = weather?.place;
 
-return (
-  <div className="app-shell">
-    <aside className="sidebar">
-      <div className="brand">
-        <div className="brand-icon">☁</div>
+  const current = weather?.current;
+  const daily = weather?.daily;
+  const place = weather?.place;
 
-        <div>
-          <h2>WeatherGPT</h2>
-          <span>Weather Intelligence</span>
-        </div>
+  return (<div className="app-shell"> <aside className="sidebar"> <div className="brand"> <div className="brand-icon">☁</div> <div> <h2>WeatherGPT</h2> <span>Weather Intelligence</span> </div> </div>
+
+
+    <div className="sidebar-label">WORKSPACE</div>
+
+    <button className="nav-item active">
+      <span>◫</span> Overview
+    </button>
+
+    <button
+      className="nav-item"
+      onClick={() =>
+        document
+          .getElementById("forecast")
+          ?.scrollIntoView({ behavior: "smooth" })
+      }
+    >
+      <span>▥</span> Forecast
+    </button>
+
+    <button
+      className="nav-item"
+      onClick={() =>
+        document
+          .getElementById("assistant")
+          ?.scrollIntoView({ behavior: "smooth" })
+      }
+    >
+      <span>✧</span> AI Assistant
+    </button>
+
+    <div className="sidebar-bottom">
+      <div className="status-dot"></div>
+      <div>
+        <strong>Weather Services</strong>
+        <span>Connected to API</span>
       </div>
-
-      <div className="sidebar-label">WORKSPACE</div>
-
-      <button className="nav-item active">
-        <span>◫</span> Overview
-      </button>
-
-      <button
-        className="nav-item"
-        onClick={() =>
-          document
-            .getElementById("forecast")
-            ?.scrollIntoView({ behavior: "smooth" })
-        }
-      >
-        <span>▥</span> Forecast
-      </button>
-
-      <button
-        className="nav-item"
-        onClick={() =>
-          document
-            .getElementById("assistant")
-            ?.scrollIntoView({ behavior: "smooth" })
-        }
-      >
-        <span>✧</span> AI Assistant
-      </button>
-
-      <div className="sidebar-bottom">
-        <div className="status-dot"></div>
-
-        <div>
-          <strong>Weather Services</strong>
-          <span>Connected to API</span>
-        </div>
-      </div>
-    </aside>
+    </div>
+  </aside>
 
     <main className="main-content">
       <header className="topbar">
         <div>
-          <div className="eyebrow">
-            WEATHER INTELLIGENCE PLATFORM
-          </div>
-
+          <div className="eyebrow">WEATHER INTELLIGENCE PLATFORM</div>
           <h1>
             Good day, Explorer <span>✦</span>
           </h1>
-
           <p>Understand the weather. Make better decisions.</p>
         </div>
 
         <form className="search-box" onSubmit={handleSearch}>
           <span>⌕</span>
-
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => setSearch(event.target.value)}
             placeholder="Search any city..."
             aria-label="Search city"
           />
-
           <button type="submit" disabled={loading}>
             {loading ? "..." : "Search"}
           </button>
@@ -390,26 +378,20 @@ return (
       </header>
 
       {error && (
-        <div className="error-banner">
+        <div className="error-banner" role="alert">
           {error}
-
-          <button onClick={() => setError("")}>
-            Dismiss
-          </button>
+          <button onClick={() => setError("")}>Dismiss</button>
         </div>
       )}
 
       {loading && !weather ? (
-        <div className="loading-state">
-          Loading weather intelligence...
-        </div>
+        <div className="loading-state">Loading weather intelligence...</div>
       ) : current && daily && place ? (
         <>
           <section className="weather-hero">
             <div className="hero-copy">
               <div className="location-tag">
                 <span>⌖</span> {place.name}
-                {place.admin1 ? `, ${place.admin1}` : ""}
                 {place.country ? `, ${place.country}` : ""}
               </div>
 
@@ -423,32 +405,30 @@ return (
 
               <div className="temperature-row">
                 <h2>{Math.round(current.temperature_2m)}°</h2>
-
                 <div className="weather-symbol">
                   {getWeatherIcon(current.weather_code)}
                 </div>
               </div>
 
               <h3>
-                {weatherTypes[current.weather_code] ||
-                  "Current Conditions"}
+                {weatherTypes[current.weather_code] || "Current Conditions"}
               </h3>
 
               <p className="hero-description">
-                Feels like{" "}
-                {Math.round(current.apparent_temperature)}°
+                Feels like {Math.round(current.apparent_temperature)}°
                 <span> · </span>
                 {current.is_day ? "Daytime" : "Nighttime"}
               </p>
 
               <div className="hero-meta">
                 <span>
-                  ◷ Local time: {current.time?.slice(11, 16)}
+                  ◷ Local time:{" "}
+                  {new Date().toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
                 </span>
-
-                <span>
-                  ↻ Updated at {updatedAt || "just now"}
-                </span>
+                <span>↻ Updated at {updatedAt || "just now"}</span>
               </div>
             </div>
 
@@ -466,7 +446,6 @@ return (
                 <div className="eyebrow">AT A GLANCE</div>
                 <h2>Weather Overview</h2>
               </div>
-
               <span className="live-badge">
                 <i></i> Live data
               </span>
@@ -476,26 +455,21 @@ return (
               <MetricCard
                 icon="◉"
                 label="Feels Like"
-                value={`${Math.round(
-                  current.apparent_temperature
-                )}°C`}
+                value={`${Math.round(current.apparent_temperature)}°C`}
                 note="Perceived temperature"
               />
-
               <MetricCard
                 icon="◌"
                 label="Humidity"
                 value={`${current.relative_humidity_2m}%`}
                 note="Relative humidity"
               />
-
               <MetricCard
                 icon="≋"
                 label="Wind Speed"
                 value={`${current.wind_speed_10m} km/h`}
                 note="At current location"
               />
-
               <MetricCard
                 icon="⌁"
                 label="Precipitation"
@@ -511,60 +485,47 @@ return (
                 <div className="eyebrow">PLAN AHEAD</div>
                 <h2>7-Day Forecast</h2>
               </div>
-
               <span className="muted-text">Local dates</span>
             </div>
 
             <div className="forecast-grid">
               {daily.time.map((date, index) => (
                 <div
-                  className={`forecast-card ${index === 0 ? "today" : ""
-                    }`}
+                  className={`forecast-card ${index === 0 ? "today" : ""}`}
                   key={date}
                 >
                   <span className="forecast-day">
                     {index === 0
                       ? "Today"
-                      : new Date(
-                        `${date}T12:00:00`
-                      ).toLocaleDateString("en-US", {
-                        weekday: "short",
-                      })}
+                      : new Date(`${date}T12:00:00`).toLocaleDateString(
+                        "en-US",
+                        { weekday: "short" }
+                      )}
                   </span>
 
                   <span className="forecast-icon">
-                    {getWeatherIcon(
-                      daily.weather_code[index]
-                    )}
+                    {getWeatherIcon(daily.weather_code[index])}
                   </span>
 
                   <strong>
-                    {Math.round(
-                      daily.temperature_2m_max[index]
-                    )}°
+                    {Math.round(daily.temperature_2m_max[index])}°
                   </strong>
 
                   <span className="low-temp">
-                    {Math.round(
-                      daily.temperature_2m_min[index]
-                    )}°
+                    {Math.round(daily.temperature_2m_min[index])}°
                   </span>
 
                   <div className="rain-chance">
                     <span>☂</span>{" "}
-                    {daily.precipitation_probability_max?.[
-                      index
-                    ] ?? "—"}
-                    %
+                    {daily.precipitation_probability_max[index] ?? "—"}%
                   </div>
                 </div>
               ))}
             </div>
 
             <p className="data-note">
-              Forecasts are estimates and may change. Rain
-              probability is shown when provided by the weather
-              service.
+              Forecasts are estimates and may change. Rain probability is
+              shown when provided by the weather service.
             </p>
           </section>
 
@@ -662,27 +623,18 @@ return (
         </>
       ) : (
         <div className="loading-state">
-          Weather data is not available. Search for a city to try
-          again.
+          Weather data is not available. Search for a city to try again.
         </div>
       )}
     </main>
   </div>
-);
+
+
+  );
 }
 
 function MetricCard({ icon, label, value, note }) {
-  return (
-    <article className="metric-card">
-      <div className="metric-top">
-        <span className="metric-icon">{icon}</span>
-        <span className="metric-label">{label}</span>
-      </div>
-
-      <strong className="metric-value">{value}</strong>
-
-      <span className="metric-note">{note}</span>
-    </article>
+  return (<article className="metric-card"> <div className="metric-top"> <span className="metric-icon">{icon}</span> <span className="metric-label">{label}</span> </div> <strong className="metric-value">{value}</strong> <span className="metric-note">{note}</span> </article>
   );
 }
 
