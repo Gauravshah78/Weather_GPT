@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
+from google.genai import types
 
 
 load_dotenv()
@@ -30,7 +31,13 @@ app.add_middleware(
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 
 client = (
-    genai.Client(api_key=gemini_api_key)
+    genai.Client(
+        api_key=gemini_api_key,
+        http_options=types.HttpOptions(
+            timeout=30000,
+            retry_options=types.HttpRetryOptions(attempts=1)
+        )
+    )
     if gemini_api_key
     else None
 )
@@ -61,7 +68,7 @@ def chat(request: ChatRequest):
     if client is None:
         raise HTTPException(
             status_code=500,
-            detail="GEMINI_API_KEY missing. Check backend .env file."
+            detail="GEMINI_API_KEY missing. Check backend environment variables."
         )
 
     user_message = request.message.strip()
@@ -82,11 +89,13 @@ def chat(request: ChatRequest):
 You are WeatherGPT, a helpful and friendly weather assistant.
 
 Instructions:
-- Answer the user's question clearly.
+- Answer the user's question clearly and concisely.
 - Use the supplied weather data when relevant.
 - Never invent current weather conditions or forecasts.
 - If weather data is missing, say so honestly.
 - For unrelated questions, politely explain that you specialize in weather.
+- Prefer short, useful answers.
+- Respond in the language used by the user.
 
 Weather information:
 {weather_context}
@@ -95,46 +104,34 @@ User question:
 {user_message}
 """
 
-    import time
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt
+        )
 
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=prompt
-            )
+        reply = response.text
 
-            reply = response.text
-
-            if not reply:
-                raise ValueError("Gemini returned an empty response.")
-
-            return {
-                "reply": reply
-            }
-
-        except Exception as exc:
-            error_message = str(exc)
-            print(f"Gemini API error (attempt {attempt + 1}/3): {error_message}")
-
-            is_temporary = (
-                "503" in error_message
-                or "UNAVAILABLE" in error_message
-                or "429" in error_message
-                or "RESOURCE_EXHAUSTED" in error_message
-                or "500" in error_message
-            )
-
-            if is_temporary and attempt < 2:
-                time.sleep(2 * (attempt + 1))
-                continue
-
+        if not reply or not reply.strip():
             raise HTTPException(
                 status_code=502,
-                detail="AI service is temporarily unavailable. Please try again."
-            ) from exc
+                detail="The AI returned an empty response. Please try again."
+            )
 
+        return {
+            "reply": reply.strip()
+        }
 
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        print("Gemini API error:", str(exc))
+
+        raise HTTPException(
+            status_code=502,
+            detail="AI service is temporarily unavailable. Please try again."
+        ) from exc
 
 
 @app.get("/api/weather")
@@ -144,7 +141,7 @@ def get_weather(city: str):
     if not weather_api_key:
         raise HTTPException(
             status_code=500,
-            detail="OPENWEATHER_API_KEY missing. Check backend .env file."
+            detail="OPENWEATHER_API_KEY missing. Check backend environment variables."
         )
 
     city = city.strip()
@@ -174,7 +171,9 @@ def get_weather(city: str):
             weather_request,
             timeout=20
         ) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
 
         weather_items = data.get("weather", [])
         main_data = data.get("main", {})
@@ -282,7 +281,9 @@ def get_weather(city: str):
 
     except urllib.error.HTTPError as exc:
         try:
-            error_data = json.loads(exc.read().decode("utf-8"))
+            error_data = json.loads(
+                exc.read().decode("utf-8")
+            )
             provider_message = error_data.get(
                 "message",
                 "Weather provider request failed."
@@ -291,9 +292,9 @@ def get_weather(city: str):
             provider_message = "Weather provider request failed."
 
         print(
-    f"Weather API error: HTTP {exc.code} - "
-    f"URL: {exc.url} - Message: {provider_message}"
-)
+            f"Weather API error: HTTP {exc.code} - "
+            f"Message: {provider_message}"
+        )
 
         if exc.code == 401:
             raise HTTPException(
@@ -326,10 +327,7 @@ def get_weather(city: str):
 
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Could not connect to the weather provider. "
-                "Check your internet connection."
-            )
+            detail="Could not connect to the weather provider."
         ) from exc
 
     except (KeyError, IndexError, ValueError) as exc:
