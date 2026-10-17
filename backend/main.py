@@ -95,28 +95,46 @@ User question:
 {user_message}
 """
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-flash-lite-latest",
-            contents=prompt
-        )
+    import time
 
-        reply = response.text
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
 
-        if not reply:
-            raise ValueError("Gemini returned an empty response.")
+            reply = response.text
 
-        return {
-            "reply": reply
-        }
+            if not reply:
+                raise ValueError("Gemini returned an empty response.")
 
-    except Exception as exc:
-        print("Gemini API error:", str(exc))
+            return {
+                "reply": reply
+            }
 
-        raise HTTPException(
-            status_code=502,
-            detail="Gemini API request failed. Check the backend terminal."
-        ) from exc
+        except Exception as exc:
+            error_message = str(exc)
+            print(f"Gemini API error (attempt {attempt + 1}/3): {error_message}")
+
+            is_temporary = (
+                "503" in error_message
+                or "UNAVAILABLE" in error_message
+                or "429" in error_message
+                or "RESOURCE_EXHAUSTED" in error_message
+                or "500" in error_message
+            )
+
+            if is_temporary and attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+
+            raise HTTPException(
+                status_code=502,
+                detail="AI service is temporarily unavailable. Please try again."
+            ) from exc
+
+
 
 
 @app.get("/api/weather")
